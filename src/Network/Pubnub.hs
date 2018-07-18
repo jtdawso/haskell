@@ -54,6 +54,8 @@ import qualified Data.ByteString.Lazy         as L
 import qualified Data.Text                    as T
 import qualified Data.UUID                    as U
 
+import           Debug.Trace
+
 time :: IO (Maybe Timestamp)
 time = do
   pn <- defaultPN
@@ -84,6 +86,7 @@ subscribeInternal pn subOpts =
     connect :: PN -> Manager -> Bool -> IO ()
     connect pn' manager isReconnect = do
       let req = buildSubscribeRequest pn' "0"
+      traceM $ "subscribeInternal: " ++ show req
       eres <- try $ httpLbs req manager
       case eres of
         Right res ->
@@ -108,6 +111,7 @@ subscribeInternal pn subOpts =
     subscribe':: Manager -> PN -> IO ()
     subscribe' manager pn' = do
       let req = buildSubscribeRequest pn' $ L.toStrict $ encode (time_token pn')
+      traceM $ "subscribe': " ++ show req
       eres <- try $ runResourceT $ http req manager
       case eres of
         Right res -> do
@@ -147,16 +151,15 @@ subscribeInternal pn subOpts =
     reconnect pn' manager = connect pn' manager True
 
     buildSubscribeRequest pn' tt =
-      buildGetRequest pn' [ "v2"
-                       , "subscribe"
+      buildGetRequest pn' [ "stream"
                        , encodeUtf8 $ sub_key pn'
                        , encodeUtf8 $ if null (channels pn') then
                                         ","
                                       else
                                         T.intercalate "," (channels pn')
                        , bsFromInteger $ jsonp_callback pn'
-                       ]
-      (userIdOptions pn' ++ channelGroupOptions pn' ++ [("tt", Just tt)])
+                       , tt]
+      (userIdOptions pn' ++ channelGroupOptions pn')
       (subTimeout subOpts)
 
     channelGroupOptions :: PN -> [(B.ByteString, Maybe B.ByteString)]
@@ -199,6 +202,7 @@ publish pn channel msg = do
             (encrypt (ctx pn) (iv pn) encoded_msg)
             (userIdOptions pn)
             Nothing
+  traceM $ "publish: " ++ show req
 
   res <- httpLbs req (pnManager pn)
   return (decode $ responseBody res)
@@ -220,6 +224,7 @@ hereNow pn channel = do
                             , encodeUtf8 $ sub_key pn
                             , "channel"
                             , encodeUtf8 channel] [] Nothing
+  traceM $ "hereNow: " ++ show req
   res <- httpLbs req (pnManager pn)
   return (decode $ responseBody res)
 
@@ -243,6 +248,7 @@ history pn channel options = do
                             , encodeUtf8 channel]
             (convertHistoryOptions options ++ userIdOptions pn)
             Nothing
+  traceM $ "history: " ++ show req
   res <- httpLbs req (pnManager pn)
   return (decode $ responseBody res)
 
@@ -270,6 +276,8 @@ channelGroupDo action' pn group chs  = do
                                ] ++ isRemove)
             (channelOptions ++ userIdOptions pn)
             Nothing
+
+  traceM $ "channelGroupDo: " ++ show req
   res <- httpLbs req (pnManager pn)
   return (decode $ responseBody res)
   where
@@ -289,6 +297,8 @@ leave pn channel u = do
                             , "channel"
                             , encodeUtf8 channel
                             , "leave"] [("uuid", Just $ encodeUtf8 u)] Nothing
+
+  traceM $ "leave: " ++ show req
   _ <- httpLbs req (pnManager pn)
   return ()
 
@@ -315,6 +325,7 @@ pamDo :: B.ByteString -> PN -> Auth -> IO (Maybe Value)
 pamDo pamMethod pn authR = do
   ts <- (bsFromInteger . round) <$> getPOSIXTime
   let req = buildGetRequest pn pamURI (pamQS ts ++ [("signature", Just $ signature ts)]) Nothing
+  traceM $ "pamDo: " ++ show req
   res <- httpLbs req (pnManager pn)
   return (decode $ responseBody res)
   where
