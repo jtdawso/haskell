@@ -57,6 +57,7 @@ data PN = PN { origin         :: T.Text
              , uuid_key       :: Maybe UUID
              , auth_key       :: Maybe T.Text
              , channels       :: [T.Text]
+             , channel_groups :: [T.Text]
              , jsonp_callback :: Integer
              , time_token     :: Timestamp
              , cipher_key     :: B.ByteString
@@ -75,6 +76,7 @@ defaultPN = do
                , uuid_key       = Nothing
                , auth_key       = Nothing
                , channels       = []
+               , channel_groups = []
                , jsonp_callback = 0
                , time_token     = Timestamp 0
                , cipher_key     = B.empty

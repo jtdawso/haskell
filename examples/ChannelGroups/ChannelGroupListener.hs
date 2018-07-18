@@ -7,12 +7,13 @@ module Main where
 import           Network.Pubnub
 import           Network.Pubnub.Types
 
+import           Control.Concurrent.Async
+import           Control.Monad
 import           Data.Aeson
 import           Data.Maybe
 import           GHC.Generics
+import           System.Environment       (getArgs)
 
-import           Control.Concurrent.Async
-import           Control.Monad
 import qualified Data.ByteString.Lazy     as L
 import qualified Data.Text                as T
 import qualified Data.Text.IO             as I
@@ -27,16 +28,47 @@ instance FromJSON Msg
 
 main :: IO ()
 main = do
+  args <- getArgs
+  let pubKey = "pub-c-cc6cb3da-965a-450d-925c-ee50a0bdd838"
+  let subKey = "sub-c-3c6311f6-1bb4-11e6-9327-02ee2ddab7fe"
+  main2 pubKey subKey args
+
+main2 :: T.Text -> T.Text -> [String] -> IO ()
+main2 pubk subk ["producer"] = do
   putStrLn "Enter Username: "
   username <- I.getLine
   putStrLn "Enter Channel: "
   chan <- I.getLine
-
-  pn <- newClient username False
+  pn <- newClient pubk subk username False
   runClient (pn{channels=[chan]})
 
-newClient :: T.Text -> Bool -> IO PN
-newClient name encrypt
+main2 pubk subk ["consumer"] = do
+    putStrLn "Enter Username: "
+    username <- I.getLine
+    putStrLn "Enter Channels (space separated): "
+    chans <- I.getLine
+    pn <- newClient pubk subk username False
+    res <- channelGroupAddChannel pn "channelGroupTest" (T.words chans)
+    case  res of
+      Just cgr -> when (cgrError cgr) $
+                    print $  "Error Adding channels to group: " ++  show cgr
+      Nothing -> putStrLn "Error: Unable to connect with PubNub services"
+
+
+    subscribe pn{channel_groups=["channelGroupTest"]} defaultSubscribeOptions{ onPresence = Just outputPresence
+                                                                             , onMsg = output
+                                                                             , onConnect = putStrLn "Connected..." }
+    return ()
+
+
+main2 _ _ _ = do
+              putStrLn "Help:\n Create a producer by adding 'producer' as an argument."
+              putStrLn "Multiple producers can be created using different channels.\n "
+
+
+
+newClient :: T.Text -> T.Text -> T.Text -> Bool -> IO PN
+newClient pubk subk name encrypt
   | encrypt = either (error . show) (\x -> x{ uuid_key = Just name }) <$> encKey
   | otherwise       = newPN
   where
@@ -47,9 +79,8 @@ newClient name encrypt
     newPN  = do
                 pn <- defaultPN
                 return pn { uuid_key = Just name
-                          , channels = ["testchathaskell2"]
-                          , sub_key  = "sub-c-3c6311f6-1bb4-11e6-9327-02ee2ddab7fe"
-                          , pub_key  = "pub-c-cc6cb3da-965a-450d-925c-ee50a0bdd838"
+                          , sub_key  = subk
+                          , pub_key  = pubk
                           , ssl      = False
                           }
 

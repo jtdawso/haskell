@@ -38,7 +38,7 @@ import           Network.HTTP.Types
 
 import           Control.Applicative          ((<$>))
 import           Control.Concurrent.Async
-import           Control.Exception.Lifted     (try)
+import           Control.Exception            (try)
 import           Control.Monad.Trans
 import           Data.Maybe
 import           Data.Text.Encoding
@@ -79,8 +79,9 @@ subscribe pn subOpts =
 
 subscribeInternal :: (FromJSON b) => PN -> SubscribeOptions b -> IO (Async ())
 subscribeInternal pn subOpts =
-  async (runResourceT $ connect pn{time_token = Timestamp 0} (pnManager pn) False)
+  async (connect pn{time_token = Timestamp 0} (pnManager pn) False)
   where
+    connect :: PN -> Manager -> Bool -> IO ()
     connect pn' manager isReconnect = do
       let req = buildSubscribeRequest pn' "0"
       eres <- try $ httpLbs req manager
@@ -104,16 +105,17 @@ subscribeInternal pn subOpts =
           liftIO $ onError subOpts Nothing Nothing
           reconnect pn' manager
 
+    subscribe':: Manager -> PN -> IO ()
     subscribe' manager pn' = do
       let req = buildSubscribeRequest pn' $ L.toStrict $ encode (time_token pn')
-      eres <- try $ http req manager
+      eres <- try $ runResourceT $ http req manager
       case eres of
         Right res -> do
           case (ctx pn', iv pn') of
             (Just c, Just i) ->
-              responseBody res $$+- encryptedSubscribeSink c i
+              runResourceT $ sealConduitT (responseBody res) $$+- encryptedSubscribeSink c i
             (_, _) ->
-              responseBody res $$+- subscribeSink
+              runResourceT $ sealConduitT (responseBody res) $$+- subscribeSink
           reconnect pn' manager
         Left (HttpExceptionRequest _ ResponseTimeout) ->
           subscribe' manager pn'
@@ -145,13 +147,24 @@ subscribeInternal pn subOpts =
     reconnect pn' manager = connect pn' manager True
 
     buildSubscribeRequest pn' tt =
-      buildGetRequest pn' [ "stream"
+      buildGetRequest pn' [ "v2"
+                       , "subscribe"
                        , encodeUtf8 $ sub_key pn'
-                       , encodeUtf8 $ T.intercalate "," (channels pn')
+                       , encodeUtf8 $ if null (channels pn') then
+                                        ","
+                                      else
+                                        T.intercalate "," (channels pn')
                        , bsFromInteger $ jsonp_callback pn'
-                       , tt ]
-      (userIdOptions pn')
+                       ]
+      (userIdOptions pn' ++ channelGroupOptions pn' ++ [("tt", Just tt)])
       (subTimeout subOpts)
+
+    channelGroupOptions :: PN -> [(B.ByteString, Maybe B.ByteString)]
+    channelGroupOptions pn' = let cgs = channel_groups pn' in
+                                if null cgs then
+                                  []
+                                else
+                                    [("channel-group", Just $ encodeUtf8 (T.intercalate "," (channel_groups pn')))]
 
     decodeEncrypted c i m = decodeUnencrypted $ decrypt c i m
 
