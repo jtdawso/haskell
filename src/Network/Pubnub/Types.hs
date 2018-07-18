@@ -32,23 +32,23 @@ module Network.Pubnub.Types
 
 import           GHC.Generics
 
-import           Control.Applicative   (empty)
+import           Control.Applicative     (empty)
 import           Data.Aeson
 import           Data.Aeson.TH
-import           Data.Aeson.Types      (Options (..), camelTo2, defaultOptions)
+import           Data.Aeson.Types        (Options (..), camelTo2,
+                                          defaultOptions)
 import           Data.Text.Read
 
 import           Crypto.Cipher.AES
 import           Crypto.Cipher.Types
 import           Data.Digest.Pure.SHA
 
-import           Network.HTTP.Client   (Manager, defaultManagerSettings,
-                                        newManager)
-
-import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy  as L
-import qualified Data.Text             as T
-import qualified Data.Vector           as V
+import qualified Data.ByteString.Char8   as B
+import qualified Data.ByteString.Lazy    as L
+import qualified Data.Text               as T
+import qualified Data.Vector             as V
+import           Network.HTTP.Client     (Manager, newManager)
+import           Network.HTTP.Client.TLS (tlsManagerSettings)
 
 data PN = PN { origin         :: T.Text
              , pub_key        :: T.Text
@@ -68,7 +68,7 @@ data PN = PN { origin         :: T.Text
 
 defaultPN :: IO PN
 defaultPN = do
-    man <- newManager defaultManagerSettings
+    man <- newManager tlsManagerSettings
     return PN { origin         = "haskell.pubnub.com"
                , pub_key        = T.empty
                , sub_key        = T.empty

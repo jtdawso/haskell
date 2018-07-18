@@ -38,7 +38,7 @@ import           Network.HTTP.Types
 
 import           Control.Applicative          ((<$>))
 import           Control.Concurrent.Async
-import           Control.Exception            (try)
+import           Control.Exception.Lifted     (try)
 import           Control.Monad.Trans
 import           Data.Maybe
 import           Data.Text.Encoding
@@ -81,13 +81,14 @@ subscribe pn subOpts =
 
 subscribeInternal :: (FromJSON b) => PN -> SubscribeOptions b -> IO (Async ())
 subscribeInternal pn subOpts =
-  async (connect pn{time_token = Timestamp 0} (pnManager pn) False)
+  async (runResourceT $ connect pn{time_token = Timestamp 0} (pnManager pn) False)
   where
     connect :: PN -> Manager -> Bool -> IO ()
     connect pn' manager isReconnect = do
       let req = buildSubscribeRequest pn' "0"
       traceM $ "subscribeInternal: " ++ show req
       eres <- try $ httpLbs req manager
+      traceM $ show eres
       case eres of
         Right res ->
           case decode $ responseBody res of
@@ -98,13 +99,16 @@ subscribeInternal pn subOpts =
               subscribe' manager (if resumeOnReconnect subOpts && isReconnect
                                   then pn
                                   else pn{time_token=t})
-            _ -> do
+            err -> do
+              liftIO $ print err
               liftIO (onDisconnect subOpts)
               subscribe' manager pn
-        Left (HttpExceptionRequest _ (StatusCodeException res _)) -> do
+        Left err@(HttpExceptionRequest _ (StatusCodeException res _)) -> do
+          liftIO $ print err
           liftIO $ onError' res
           connect pn' manager isReconnect
-        Left _ -> do
+        Left err -> do
+          liftIO $ print err
           liftIO $ onError subOpts Nothing Nothing
           reconnect pn' manager
 
@@ -112,21 +116,24 @@ subscribeInternal pn subOpts =
     subscribe' manager pn' = do
       let req = buildSubscribeRequest pn' $ L.toStrict $ encode (time_token pn')
       traceM $ "subscribe': " ++ show req
-      eres <- try $ runResourceT $ http req manager
+      eres <- try $ http req manager
       case eres of
         Right res -> do
           case (ctx pn', iv pn') of
             (Just c, Just i) ->
-              runResourceT $ sealConduitT (responseBody res) $$+- encryptedSubscribeSink c i
+              sealConduitT (responseBody res) $$+- encryptedSubscribeSink c i
             (_, _) ->
-              runResourceT $ sealConduitT (responseBody res) $$+- subscribeSink
+              sealConduitT (responseBody res) $$+- subscribeSink
           reconnect pn' manager
-        Left (HttpExceptionRequest _ ResponseTimeout) ->
+        Left err@(HttpExceptionRequest _ ResponseTimeout) -> do
+          liftIO $ print err
           subscribe' manager pn'
-        Left (HttpExceptionRequest _ (StatusCodeException res _)) -> do
+        Left err@(HttpExceptionRequest _ (StatusCodeException res _)) -> do
+          liftIO $ print err
           liftIO $ onError' res
           reconnect pn' manager
-        Left _ -> do
+        Left err -> do
+          liftIO $ print err
           liftIO $ onError subOpts Nothing Nothing
           reconnect pn' manager
 
@@ -134,6 +141,7 @@ subscribeInternal pn subOpts =
       awaitForever (\x ->
                        case decode (L.fromStrict x) of
                          Just (EncryptedSubscribeResponse (resp, _)) -> do
+                           liftIO $ print resp
                            _ <- liftIO $ mapM (onMsg subOpts . decodeEncrypted c i) resp
                            return ()
                          Nothing ->
@@ -151,15 +159,16 @@ subscribeInternal pn subOpts =
     reconnect pn' manager = connect pn' manager True
 
     buildSubscribeRequest pn' tt =
-      buildGetRequest pn' [ "stream"
+      buildGetRequest pn' [ "v2"
+                       , "subscribe"
                        , encodeUtf8 $ sub_key pn'
                        , encodeUtf8 $ if null (channels pn') then
                                         ","
                                       else
                                         T.intercalate "," (channels pn')
                        , bsFromInteger $ jsonp_callback pn'
-                       , tt]
-      (userIdOptions pn' ++ channelGroupOptions pn')
+                       ]
+      (("tt", Just tt):(userIdOptions pn') ++ channelGroupOptions pn')
       (subTimeout subOpts)
 
     channelGroupOptions :: PN -> [(B.ByteString, Maybe B.ByteString)]
@@ -185,6 +194,7 @@ subscribeInternal pn subOpts =
               let status = responseStatus res
               let code = statusCode status
               let msg  = statusMessage status
+              print $ "Status: " ++ show status ++ " Code: " ++ show code ++ " Message: " ++ show msg
               onError subOpts (Just code) (Just msg)
 
 
@@ -205,6 +215,7 @@ publish pn channel msg = do
   traceM $ "publish: " ++ show req
 
   res <- httpLbs req (pnManager pn)
+  traceM $ show res
   return (decode $ responseBody res)
   where
     signature "0"    _ = "0"
@@ -226,6 +237,7 @@ hereNow pn channel = do
                             , encodeUtf8 channel] [] Nothing
   traceM $ "hereNow: " ++ show req
   res <- httpLbs req (pnManager pn)
+  traceM $ show res
   return (decode $ responseBody res)
 
 presence :: (FromJSON b) => PN -> Maybe UUID -> (b -> IO ()) -> IO (Async ())
@@ -250,6 +262,7 @@ history pn channel options = do
             Nothing
   traceM $ "history: " ++ show req
   res <- httpLbs req (pnManager pn)
+  traceM $ show res
   return (decode $ responseBody res)
 
 channelGroupList :: PN -> T.Text -> IO (Maybe ChannelGroupResponse)
@@ -279,6 +292,7 @@ channelGroupDo action' pn group chs  = do
 
   traceM $ "channelGroupDo: " ++ show req
   res <- httpLbs req (pnManager pn)
+  traceM $ show res
   return (decode $ responseBody res)
   where
     channelOptions ::[(B.ByteString, Maybe B.ByteString)]
@@ -327,6 +341,7 @@ pamDo pamMethod pn authR = do
   let req = buildGetRequest pn pamURI (pamQS ts ++ [("signature", Just $ signature ts)]) Nothing
   traceM $ "pamDo: " ++ show req
   res <- httpLbs req (pnManager pn)
+  traceM $ show res
   return (decode $ responseBody res)
   where
     authK = T.intercalate "," $ authKeys authR
