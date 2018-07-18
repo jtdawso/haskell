@@ -54,8 +54,6 @@ import qualified Data.ByteString.Lazy         as L
 import qualified Data.Text                    as T
 import qualified Data.UUID                    as U
 
-import           Debug.Trace
-
 time :: IO (Maybe Timestamp)
 time = do
   pn <- defaultPN
@@ -83,12 +81,9 @@ subscribeInternal :: (FromJSON b) => PN -> SubscribeOptions b -> IO (Async ())
 subscribeInternal pn subOpts =
   async (runResourceT $ connect pn{time_token = Timestamp 0} (pnManager pn) False)
   where
-    connect :: PN -> Manager -> Bool -> IO ()
     connect pn' manager isReconnect = do
       let req = buildSubscribeRequest pn' "0"
-      traceM $ "subscribeInternal: " ++ show req
       eres <- try $ httpLbs req manager
-      traceM $ show eres
       case eres of
         Right res ->
           case decode $ responseBody res of
@@ -100,30 +95,26 @@ subscribeInternal pn subOpts =
                                   then pn
                                   else pn{time_token=t})
             err -> do
-              liftIO $ print err
+              liftIO $ putStrLn $ "onDisconnect: " ++ show err
               liftIO (onDisconnect subOpts)
               subscribe' manager pn
-        Left err@(HttpExceptionRequest _ (StatusCodeException res _)) -> do
-          liftIO $ print err
+        Left (HttpExceptionRequest _ (StatusCodeException res _)) -> do
           liftIO $ onError' res
           connect pn' manager isReconnect
-        Left err -> do
-          liftIO $ print err
+        Left _ -> do
           liftIO $ onError subOpts Nothing Nothing
           reconnect pn' manager
 
-    subscribe':: Manager -> PN -> IO ()
     subscribe' manager pn' = do
       let req = buildSubscribeRequest pn' $ L.toStrict $ encode (time_token pn')
-      traceM $ "subscribe': " ++ show req
       eres <- try $ http req manager
       case eres of
         Right res -> do
           case (ctx pn', iv pn') of
             (Just c, Just i) ->
-              sealConduitT (responseBody res) $$+- encryptedSubscribeSink c i
+               responseBody res $$+- encryptedSubscribeSink c i
             (_, _) ->
-              sealConduitT (responseBody res) $$+- subscribeSink
+               responseBody res $$+- subscribeSink
           reconnect pn' manager
         Left err@(HttpExceptionRequest _ ResponseTimeout) -> do
           liftIO $ print err
@@ -159,16 +150,15 @@ subscribeInternal pn subOpts =
     reconnect pn' manager = connect pn' manager True
 
     buildSubscribeRequest pn' tt =
-      buildGetRequest pn' [ "v2"
-                       , "subscribe"
+      buildGetRequest pn' [ "stream"
                        , encodeUtf8 $ sub_key pn'
                        , encodeUtf8 $ if null (channels pn') then
                                         ","
                                       else
                                         T.intercalate "," (channels pn')
                        , bsFromInteger $ jsonp_callback pn'
-                       ]
-      (("tt", Just tt):(userIdOptions pn') ++ channelGroupOptions pn')
+                       , tt]
+      (userIdOptions pn' ++ channelGroupOptions pn')
       (subTimeout subOpts)
 
     channelGroupOptions :: PN -> [(B.ByteString, Maybe B.ByteString)]
@@ -212,10 +202,8 @@ publish pn channel msg = do
             (encrypt (ctx pn) (iv pn) encoded_msg)
             (userIdOptions pn)
             Nothing
-  traceM $ "publish: " ++ show req
 
   res <- httpLbs req (pnManager pn)
-  traceM $ show res
   return (decode $ responseBody res)
   where
     signature "0"    _ = "0"
@@ -235,9 +223,7 @@ hereNow pn channel = do
                             , encodeUtf8 $ sub_key pn
                             , "channel"
                             , encodeUtf8 channel] [] Nothing
-  traceM $ "hereNow: " ++ show req
   res <- httpLbs req (pnManager pn)
-  traceM $ show res
   return (decode $ responseBody res)
 
 presence :: (FromJSON b) => PN -> Maybe UUID -> (b -> IO ()) -> IO (Async ())
@@ -260,9 +246,7 @@ history pn channel options = do
                             , encodeUtf8 channel]
             (convertHistoryOptions options ++ userIdOptions pn)
             Nothing
-  traceM $ "history: " ++ show req
   res <- httpLbs req (pnManager pn)
-  traceM $ show res
   return (decode $ responseBody res)
 
 channelGroupList :: PN -> T.Text -> IO (Maybe ChannelGroupResponse)
@@ -290,9 +274,7 @@ channelGroupDo action' pn group chs  = do
             (channelOptions ++ userIdOptions pn)
             Nothing
 
-  traceM $ "channelGroupDo: " ++ show req
   res <- httpLbs req (pnManager pn)
-  traceM $ show res
   return (decode $ responseBody res)
   where
     channelOptions ::[(B.ByteString, Maybe B.ByteString)]
@@ -312,7 +294,6 @@ leave pn channel u = do
                             , encodeUtf8 channel
                             , "leave"] [("uuid", Just $ encodeUtf8 u)] Nothing
 
-  traceM $ "leave: " ++ show req
   _ <- httpLbs req (pnManager pn)
   return ()
 
@@ -339,9 +320,7 @@ pamDo :: B.ByteString -> PN -> Auth -> IO (Maybe Value)
 pamDo pamMethod pn authR = do
   ts <- (bsFromInteger . round) <$> getPOSIXTime
   let req = buildGetRequest pn pamURI (pamQS ts ++ [("signature", Just $ signature ts)]) Nothing
-  traceM $ "pamDo: " ++ show req
   res <- httpLbs req (pnManager pn)
-  traceM $ show res
   return (decode $ responseBody res)
   where
     authK = T.intercalate "," $ authKeys authR
